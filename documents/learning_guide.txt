@@ -1,0 +1,21 @@
+VIDYA - STUDENT LEARNING GUIDE
+
+Topic: Personalized Learning
+
+Personalized learning is an educational approach that adapts teaching methods and learning resources according to each student's needs, abilities, interests, and learning speed.
+
+Benefits:
+1. Students can learn at their own pace.
+2. Teachers can identify students who need additional support.
+3. Learning resources can be recommended based on student performance.
+4. Regular assessments help track academic progress.
+
+Role of AI:
+Artificial Intelligence can analyze student performance, identify weak subjects, recommend learning materials, and generate practice questions.
+
+Study Tips:
+1. Create a daily study timetable.
+2. Practice difficult topics regularly.
+3. Complete assignments on time.
+4. Review quiz and examination results.
+5. Ask teachers for help when needed.
