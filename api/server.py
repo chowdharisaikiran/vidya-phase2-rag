@@ -6,7 +6,6 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-# Add project root to Python path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
@@ -15,13 +14,13 @@ from rag import ask_vidya, create_vector_store
 app = FastAPI(
     title="Vidya RAG API",
     description="AI-powered personalized learning assistant",
-    version="1.0.0"
+    version="1.1.0"
 )
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Restrict this before production deployment
-    allow_credentials=True,
+    allow_origins=["*"],
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -48,10 +47,12 @@ def health():
 def ingest_documents():
     try:
         chunks = create_vector_store()
+
         return {
             "message": "Documents indexed successfully",
             "chunks_indexed": chunks
         }
+
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -59,20 +60,46 @@ def ingest_documents():
 @app.post("/ask")
 def ask_question(request: QuestionRequest):
     try:
-        if not request.question.strip():
+        question = request.question.strip()
+
+        if not question:
             raise HTTPException(
                 status_code=400,
                 detail="Question cannot be empty"
             )
 
-        answer = ask_vidya(request.question)
+        answer = ask_vidya(question)
+
+        source_marker = "**Knowledge Base Sources:**"
+
+        if source_marker in answer:
+            answer_text, source_text = answer.split(
+                source_marker, 1
+            )
+            sources = [
+                item.strip()
+                for item in source_text.split(",")
+                if item.strip()
+            ]
+        else:
+            answer_text = answer
+            sources = []
 
         return {
-            "question": request.question,
-            "answer": answer
+            "question": question,
+            "answer": answer_text.strip(),
+            "sources": sources,
+            "source_type": (
+                "knowledge_base" if sources else "general_ai"
+            ),
+            "status": "success"
         }
 
     except HTTPException:
         raise
+
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(
+            status_code=500,
+            detail=str(e)
+        )

@@ -1,6 +1,7 @@
-
+﻿
 import os
 from pathlib import Path
+from collections import defaultdict
 
 from dotenv import load_dotenv
 
@@ -25,6 +26,7 @@ VECTOR_DIR = BASE_DIR / "embeddings"
 
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+
 GROQ_MODEL = os.getenv(
     "GROQ_MODEL",
     "openai/gpt-oss-120b"
@@ -48,7 +50,7 @@ embeddings = GoogleGenerativeAIEmbeddings(
 
 
 # =====================================
-# LOAD DOCUMENTS
+# LOAD DOCUMENTS RECURSIVELY
 # =====================================
 
 def load_documents():
@@ -60,22 +62,35 @@ def load_documents():
         exist_ok=True
     )
 
-    for file in DOCUMENTS_DIR.iterdir():
+    for file in DOCUMENTS_DIR.rglob("*"):
+
+        if not file.is_file():
+            continue
 
         if file.suffix.lower() == ".pdf":
 
-            documents.extend(
-                PyPDFLoader(str(file)).load()
-            )
+            try:
+                documents.extend(
+                    PyPDFLoader(str(file)).load()
+                )
+                print(f"Loaded PDF: {file.name}")
+
+            except Exception as error:
+                print(f"PDF loading error ({file.name}): {error}")
 
         elif file.suffix.lower() == ".txt":
 
-            documents.extend(
-                TextLoader(
-                    str(file),
-                    encoding="utf-8"
-                ).load()
-            )
+            try:
+                documents.extend(
+                    TextLoader(
+                        str(file),
+                        encoding="utf-8"
+                    ).load()
+                )
+                print(f"Loaded TXT: {file.name}")
+
+            except Exception as error:
+                print(f"TXT loading error ({file.name}): {error}")
 
     return documents
 
@@ -86,12 +101,18 @@ def load_documents():
 
 def create_vector_store():
 
+    print("\nLoading educational documents...")
+
     docs = load_documents()
 
     if not docs:
         raise ValueError(
             "No PDF or TXT documents found in documents folder."
         )
+
+    print(
+        f"\nTotal document pages/files loaded: {len(docs)}"
+    )
 
     splitter = RecursiveCharacterTextSplitter(
         chunk_size=800,
@@ -105,6 +126,10 @@ def create_vector_store():
             "No document chunks were generated."
         )
 
+    print(
+        f"Generating embeddings for {len(chunks)} chunks..."
+    )
+
     VECTOR_DIR.mkdir(
         parents=True,
         exist_ok=True
@@ -117,6 +142,10 @@ def create_vector_store():
 
     vector_store.save_local(
         str(VECTOR_DIR)
+    )
+
+    print(
+        "\nFAISS knowledge base created successfully!"
     )
 
     return len(chunks)
@@ -144,6 +173,97 @@ def get_vector_store():
 
 
 # =====================================
+# SMART DOCUMENT RETRIEVAL
+# =====================================
+
+def retrieve_relevant_documents(question: str):
+
+    index_file = VECTOR_DIR / "index.faiss"
+
+    if not index_file.exists():
+        return "", []
+
+    vector_store = get_vector_store()
+
+    results = vector_store.similarity_search_with_score(
+        question.strip(),
+        k=6
+    )
+
+    if not results:
+        return "", []
+
+    source_groups = defaultdict(list)
+
+    for doc, score in results:
+
+        source = doc.metadata.get(
+            "source",
+            "Unknown"
+        )
+
+        source_groups[source].append(
+            (doc, score)
+        )
+
+    primary_source = min(
+        source_groups,
+        key=lambda source: (
+            -len(source_groups[source]),
+            min(score for _, score in source_groups[source])
+        )
+    )
+
+    selected_results = sorted(
+        source_groups[primary_source],
+        key=lambda item: item[1]
+    )[:3]
+
+    relevant_docs = [
+        doc for doc, score in selected_results
+    ]
+
+    context = "\n\n".join(
+        doc.page_content
+        for doc in relevant_docs
+    )
+
+    source_files = [
+        Path(primary_source).name
+    ]
+
+    print("\nRetrieval Debug:")
+    print("Selected Source:", source_files[0])
+    print("Selected Chunks:", len(relevant_docs))
+
+    return context, source_files
+
+
+# =====================================
+# TEXT ENCODING REPAIR
+# =====================================
+
+def repair_text_encoding(text: str) -> str:
+
+    if not isinstance(text, str):
+        text = str(text)
+
+    # Only attempt repair when common mojibake markers appear.
+    if "Ã" in text or "â" in text:
+
+        try:
+            repaired = text.encode("cp1252").decode("utf-8")
+
+            if repaired.count(" ") <= text.count(" "):
+                return repaired
+
+        except (UnicodeEncodeError, UnicodeDecodeError):
+            pass
+
+    return text
+
+
+# =====================================
 # VIDYA AI - RAG + GENERAL AI
 # =====================================
 
@@ -161,32 +281,15 @@ def ask_vidya(question: str):
         temperature=0.3
     )
 
-    context = ""
+    # Retrieve relevant educational context
+    context, source_files = retrieve_relevant_documents(
+        question
+    )
 
-    # Retrieve documents only when FAISS index exists
-    if (VECTOR_DIR / "index.faiss").exists():
+    # =================================
+    # VIDYA PROMPT
+    # =================================
 
-        vector_store = get_vector_store()
-
-        results = vector_store.similarity_search_with_score(
-            question,
-            k=4
-        )
-
-        # Lower FAISS L2 distance means better similarity.
-        # Threshold is a configurable starting point.
-        relevant_docs = [
-            doc
-            for doc, score in results
-            if score < 1.2
-        ]
-
-        context = "\n\n".join(
-            doc.page_content
-            for doc in relevant_docs
-        )
-
-    # Prompt for both RAG and general knowledge
     prompt = ChatPromptTemplate.from_template("""
 You are Vidya, an intelligent AI learning assistant.
 
@@ -194,26 +297,42 @@ Your purpose is to help students learn effectively.
 
 Instructions:
 
-1. If relevant educational context is provided,
-   use it to answer the student's question.
+1. When educational context is provided,
+   use it as the primary reference for answering.
 
-2. If the context does not contain the answer,
-   answer using your general knowledge.
+2. Use only information from the context
+   when making claims about uploaded documents.
 
-3. Never refuse to answer a general academic question
+3. If the context does not contain enough information,
+   supplement the answer using your general knowledge.
+
+4. Never refuse a general academic question
    just because it is missing from the documents.
 
-4. Explain concepts in simple language.
+5. Explain concepts in simple and clear language.
 
-5. Provide examples and step-by-step explanations
+6. Provide examples and step-by-step explanations
    whenever useful.
 
-6. For programming questions, explain concepts and
-   provide code examples when appropriate.
+7. For programming questions, explain concepts
+   and provide code examples when appropriate.
 
-7. Do not invent facts. If uncertain, say so clearly.
+8. Do not invent facts. If uncertain, say so clearly.
 
-8. Respond in the same language used by the student.
+9. Respond in the same language used by the student.
+
+10. Use standard ASCII punctuation wherever possible.
+    Avoid unnecessary decorative symbols.
+
+11. Maintain proper spaces between all words.
+
+12. Use clean and simple Markdown formatting.
+
+13. Avoid unnecessary tables and complicated formatting.
+
+14. Keep answers accurate, structured, and readable.
+
+15. Check punctuation and spacing before responding.
 
 Educational context:
 {context}
@@ -224,6 +343,10 @@ Student question:
 Answer:
 """)
 
+    # =================================
+    # GENERATE ANSWER
+    # =================================
+
     chain = prompt | llm
 
     response = chain.invoke({
@@ -232,7 +355,24 @@ Answer:
         "question": question.strip()
     })
 
-    return response.content
+    answer = repair_text_encoding(response.content)
+
+    # =================================
+    # SOURCE ATTRIBUTION
+    # =================================
+
+    if source_files:
+
+        return (
+            f"{answer}\n\n"
+            f"**Knowledge Base Sources:** "
+            f"{', '.join(source_files)}"
+        )
+
+    return (
+        f"{answer}\n\n"
+        "**Source:** General AI (Groq)"
+    )
 
 
 # =====================================
@@ -241,7 +381,7 @@ Answer:
 
 if __name__ == "__main__":
 
-    print("\n🎓 VIDYA AI ASSISTANT")
+    print("\nVIDYA AI ASSISTANT")
     print("-" * 40)
 
     while True:
@@ -251,6 +391,7 @@ if __name__ == "__main__":
         ).strip()
 
         if question.lower() in ["exit", "quit"]:
+
             print("Thank you for using Vidya!")
             break
 
