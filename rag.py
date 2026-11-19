@@ -12,6 +12,8 @@ from langchain_community.vectorstores import FAISS
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_groq import ChatGroq
 
+from conversation import contextualize_question
+
 
 # =====================================
 # CONFIGURATION
@@ -248,7 +250,6 @@ def repair_text_encoding(text: str) -> str:
     if not isinstance(text, str):
         text = str(text)
 
-    # Only attempt repair when common mojibake markers appear.
     if "Ã" in text or "â" in text:
 
         try:
@@ -264,15 +265,17 @@ def repair_text_encoding(text: str) -> str:
 
 
 # =====================================
-# VIDYA AI - RAG + GENERAL AI
+# VIDYA AI - CONVERSATIONAL RAG
 # =====================================
 
-def ask_vidya(question: str):
+def ask_vidya(question: str, chat_history=None):
 
     if not question or not question.strip():
         raise ValueError(
             "Please enter a valid question."
         )
+
+    chat_history = chat_history or []
 
     # Initialize Groq LLM
     llm = ChatGroq(
@@ -281,9 +284,25 @@ def ask_vidya(question: str):
         temperature=0.3
     )
 
-    # Retrieve relevant educational context
+    # =================================
+    # CONVERSATIONAL QUESTION REWRITING
+    # =================================
+
+    standalone_question = contextualize_question(
+        llm,
+        question.strip(),
+        chat_history
+    )
+
+    print("\nOriginal Question:", question)
+    print("Contextualized Question:", standalone_question)
+
+    # =================================
+    # DOCUMENT RETRIEVAL
+    # =================================
+
     context, source_files = retrieve_relevant_documents(
-        question
+        standalone_question
     )
 
     # =================================
@@ -322,7 +341,6 @@ Instructions:
 9. Respond in the same language used by the student.
 
 10. Use standard ASCII punctuation wherever possible.
-    Avoid unnecessary decorative symbols.
 
 11. Maintain proper spaces between all words.
 
@@ -337,11 +355,23 @@ Instructions:
 Educational context:
 {context}
 
-Student question:
+Conversation history:
+{history}
+
+Student's original question:
+{original_question}
+
+Contextualized question:
 {question}
 
 Answer:
 """)
+
+    # Format recent history for the answer prompt
+    history_text = "\n".join(
+        f"{message['role']}: {message['content']}"
+        for message in chat_history[-10:]
+    )
 
     # =================================
     # GENERATE ANSWER
@@ -350,9 +380,13 @@ Answer:
     chain = prompt | llm
 
     response = chain.invoke({
-        "context": context if context else
-        "No relevant educational documents found.",
-        "question": question.strip()
+        "context": (
+            context if context
+            else "No relevant educational documents found."
+        ),
+        "history": history_text or "No previous conversation.",
+        "original_question": question.strip(),
+        "question": standalone_question
     })
 
     answer = repair_text_encoding(response.content)
@@ -376,13 +410,15 @@ Answer:
 
 
 # =====================================
-# LOCAL TEST
+# LOCAL CONVERSATION TEST
 # =====================================
 
 if __name__ == "__main__":
 
     print("\nVIDYA AI ASSISTANT")
     print("-" * 40)
+
+    chat_history = []
 
     while True:
 
@@ -397,10 +433,23 @@ if __name__ == "__main__":
 
         try:
 
-            answer = ask_vidya(question)
+            answer = ask_vidya(
+                question,
+                chat_history
+            )
 
             print("\nVidya:")
             print(answer)
+
+            chat_history.append({
+                "role": "user",
+                "content": question
+            })
+
+            chat_history.append({
+                "role": "assistant",
+                "content": answer
+            })
 
         except Exception as error:
 
