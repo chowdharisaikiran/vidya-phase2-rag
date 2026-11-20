@@ -1,3 +1,4 @@
+
 langchain
 langchain-community
 langchain-groq
@@ -8,3 +9,4 @@ pypdf
 fastapi
 uvicorn
 python-dotenv
+supabase
